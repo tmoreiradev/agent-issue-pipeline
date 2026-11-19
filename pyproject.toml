@@ -1,0 +1,15 @@
+[project]
+name = "agent-issue-pipeline"
+version = "0.1.0"
+description = "Issue-to-deploy pipeline for coding agents: gate, isolated worker, cross-vendor review, rollback."
+requires-python = ">=3.11"
+license = "MIT"
+
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "B", "UP"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

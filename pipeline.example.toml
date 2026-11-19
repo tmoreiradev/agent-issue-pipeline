@@ -1,0 +1,47 @@
+# Real agents: Claude Code as the worker, Codex as the reviewer, Claude Opus as the fallback reviewer.
+# Paths are relative to this file. Placeholders: {prompt} {model} {out} {python} {base}.
+
+issues = "issues"        # Markdown tracker folder (see tracker.py)
+reports = "reports"      # one report per issue + pipeline-log.md
+work = ".pipeline"       # worktrees, review folders and logs
+max_rounds = 4
+poll_seconds = 300
+
+[repo]
+path = "../my-app"       # a clone whose `origin` the pipeline pushes to
+branch = "main"
+setup = ["npm ci --no-audit --no-fund"]          # runs inside each fresh worktree
+checks = [
+  "npm test 2>&1 | tail -20",
+  "npm run lint",
+  "npm run build 2>&1 | tail -5",
+]
+
+[worker]
+# The agent may edit and commit, but never deploy or publish: that is the pipeline's job.
+command = ["claude", "-p", "{prompt}", "--model", "{model}", "--permission-mode", "bypassPermissions",
+           "--disallowedTools", "Bash(docker:*)", "Bash(sudo:*)", "Bash(git push:*)"]
+model = "sonnet"         # a `model:opus` label on the issue overrides it
+timeout_minutes = 90
+
+[reviewer]
+# Runs in a folder that only holds REVIEW.md, diff.patch, checks.txt (and previous.md): read-only by design.
+command = ["codex", "exec", "-s", "read-only", "--skip-git-repo-check", "-o", "{out}",
+           "Read REVIEW.md in this folder and do exactly the review it describes."]
+command_name = "codex"
+fallback = ["claude", "-p", "Read REVIEW.md in this folder and do exactly the review it describes.", "--model", "opus"]
+fallback_name = "claude opus (fallback)"
+timeout_minutes = 40
+
+[deploy]                 # optional; remove the section to stop after the merge
+backup = "cp data/app.db data/app.db.bak-$(date +%Y%m%d-%H%M%S)"
+snapshot = "docker tag my-app:local my-app:prev"
+build = "docker compose build app 2>&1 | tail -20"
+up = "docker compose up -d app"
+health = "curl -sf http://localhost:8000/health"
+rollback = "docker tag my-app:prev my-app:local && docker compose up -d app"
+health_tries = 30
+health_interval_seconds = 2
+
+[notify]
+webhook_env = "PIPELINE_WEBHOOK"   # env var with a Discord-compatible webhook URL; unset = silent
