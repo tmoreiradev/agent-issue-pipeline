@@ -1,0 +1,6 @@
+$ "pythoncore-3.14-64/python.exe" -m unittest discover -s tests -q 2>&1 | tail -15
+(exit 0)
+----------------------------------------------------------------------
+Ran 52 tests in 0.001s
+
+OK

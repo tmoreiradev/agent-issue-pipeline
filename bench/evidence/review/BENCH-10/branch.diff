@@ -1,0 +1,104 @@
+diff --git a/brdocs/installments.py b/brdocs/installments.py
+new file mode 100644
+index 0000000..1082ce5
+--- /dev/null
++++ b/brdocs/installments.py
+@@ -0,0 +1,19 @@
++"""Split an amount into installments."""
++from decimal import Context, Decimal
++from functools import reduce
++
++
++def split_installments(total: Decimal, n: int) -> list[Decimal]:
++    """Split total into n two-decimal amounts summing to total; extra cents go first."""
++    if not isinstance(total, Decimal) or not total.is_finite() or total < 0:
++        raise ValueError(f"invalid total: {total!r}")
++    _, digits, exp = total.as_tuple()
++    if exp < -2:
++        raise ValueError(f"total has more than 2 decimal places: {total!r}")
++    if not isinstance(n, int) or isinstance(n, bool) or n < 1:
++        raise ValueError(f"invalid installment count: {n!r}")
++    # no int<->str conversion (4300-digit limit); own Context (exact) so the caller's prec is ignored
++    cents = reduce(lambda a, d: a * 10 + d, digits, 0) * 10 ** (exp + 2)
++    base, extra = divmod(cents, n)
++    ctx = Context(prec=len(digits) + max(exp, 0) + 4)
++    return [Decimal(base + (i < extra)).scaleb(-2, context=ctx) for i in range(n)]
+diff --git a/tests/test_installments.py b/tests/test_installments.py
+new file mode 100644
+index 0000000..8daa861
+--- /dev/null
++++ b/tests/test_installments.py
+@@ -0,0 +1,73 @@
++import unittest
++from decimal import Decimal as D, localcontext
++
++from brdocs.installments import split_installments
++
++
++class SplitInstallmentsTest(unittest.TestCase):
++    def test_exact(self):
++        self.assertEqual(split_installments(D("100.00"), 4), [D("25.00")] * 4)
++
++    def test_single(self):
++        self.assertEqual(split_installments(D("10.50"), 1), [D("10.50")])
++
++    def test_remainder_first(self):
++        self.assertEqual(
++            split_installments(D("100.00"), 3), [D("33.34"), D("33.33"), D("33.33")]
++        )
++
++    def test_two_extra_cents(self):
++        self.assertEqual(
++            split_installments(D("0.05"), 3), [D("0.02"), D("0.02"), D("0.01")]
++        )
++
++    def test_total_smaller_than_n_cents(self):
++        r = split_installments(D("0.02"), 5)
++        self.assertEqual(r, [D("0.01"), D("0.01"), D("0.00"), D("0.00"), D("0.00")])
++
++    def test_zero_total(self):
++        self.assertEqual(split_installments(D("0"), 2), [D("0.00")] * 2)
++
++    def test_two_places_and_sum(self):
++        r = split_installments(D("999.99"), 7)
++        self.assertEqual(sum(r), D("999.99"))
++        self.assertTrue(all(x.as_tuple().exponent == -2 for x in r))
++        self.assertLessEqual(max(r) - min(r), D("0.01"))
++
++    def test_three_places_rejected_even_with_trailing_zero(self):
++        with self.assertRaises(ValueError):
++            split_installments(D("1.500"), 2)
++
++    def test_large_total(self):
++        self.assertEqual(split_installments(D("1E+28"), 1), [D("1E+28")])
++        r = split_installments(D("1E+30"), 3)
++        # sum as integer cents: Decimal addition would round at 28 digits
++        self.assertEqual(sum(int(x.as_tuple().digits and "".join(map(str, x.as_tuple().digits))) for x in r), 10**32)
++        self.assertTrue(all(x.as_tuple().exponent == -2 for x in r))
++
++    def test_reduced_precision_context(self):
++        with localcontext() as ctx:
++            ctx.prec = 5
++            r = split_installments(D("12345678.91"), 3)
++        self.assertEqual(r, [D("4115226.31"), D("4115226.30"), D("4115226.30")])
++
++    def test_huge_total_beyond_int_str_limit(self):
++        with localcontext() as ctx:
++            ctx.prec = 6000
++            self.assertEqual(split_installments(D("1E+4300"), 1), [D("1E+4300")])
++            r = split_installments(D("1E+5000"), 3)
++            self.assertEqual(len(r), 3)
++            self.assertEqual(sum(r, D(0)), D("1E+5000"))
++            self.assertTrue(all(x.as_tuple().exponent == -2 for x in r))
++
++    def test_errors(self):
++        for total, n in [
++            (D("10"), 0), (D("10"), -1), (D("-1.00"), 2), (D("1.005"), 2),
++            (D("NaN"), 2), (D("Infinity"), 2), (10, 2), (D("10"), 1.5), (D("10"), True),
++        ]:
++            with self.subTest(total=total, n=n), self.assertRaises(ValueError):
++                split_installments(total, n)
++
++
++if __name__ == "__main__":
++    unittest.main()

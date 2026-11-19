@@ -1,0 +1,71 @@
+diff --git a/brdocs/selic.py b/brdocs/selic.py
+new file mode 100644
+index 0000000..c786b5f
+--- /dev/null
++++ b/brdocs/selic.py
+@@ -0,0 +1,16 @@
++"""SELIC target rate from the Banco Central do Brasil (SGS series 432)."""
++import json
++from decimal import Decimal, InvalidOperation
++from urllib.request import urlopen
++
++URL = "https://api.bcb.gov.br/dados/serie/bcdata.sgs.432/dados/ultimos/1?formato=json"
++
++
++def selic_today() -> Decimal:
++    """Return the current SELIC target rate (% per year), fetched from the BCB API on every call."""
++    with urlopen(URL, timeout=10) as resp:
++        data = json.load(resp)
++    try:
++        return Decimal(data[-1]["valor"])
++    except (IndexError, KeyError, TypeError, InvalidOperation) as e:
++        raise ValueError(f"unexpected BCB response: {data!r}") from e
+diff --git a/tests/test_selic.py b/tests/test_selic.py
+new file mode 100644
+index 0000000..c266636
+--- /dev/null
++++ b/tests/test_selic.py
+@@ -0,0 +1,43 @@
++import io
++import unittest
++from decimal import Decimal
++from unittest.mock import patch
++
++from brdocs import selic
++
++
++def fake(body):
++    return lambda url, timeout=None: io.BytesIO(body.encode())
++
++
++class SelicTest(unittest.TestCase):
++    def test_parses_rate(self):
++        with patch("brdocs.selic.urlopen", fake('[{"data":"19/11/2026","valor":"14.50"}]')):
++            self.assertEqual(selic.selic_today(), Decimal("14.50"))
++
++    def test_fetches_on_every_call(self):
++        bodies = iter(['[{"valor":"14.50"}]', '[{"valor":"14.25"}]'])
++        with patch("brdocs.selic.urlopen", lambda url, timeout=None: io.BytesIO(next(bodies).encode())):
++            self.assertEqual(selic.selic_today(), Decimal("14.50"))
++            self.assertEqual(selic.selic_today(), Decimal("14.25"))
++
++    def test_uses_bcb_api(self):
++        seen = []
++
++        def spy(url, timeout=None):
++            seen.append(url)
++            return io.BytesIO(b'[{"valor":"1"}]')
++
++        with patch("brdocs.selic.urlopen", spy):
++            selic.selic_today()
++        self.assertTrue(seen[0].startswith("https://api.bcb.gov.br/"))
++
++    def test_bad_response(self):
++        for body in ("[]", '[{"x":1}]', '[{"valor":"abc"}]'):
++            with patch("brdocs.selic.urlopen", fake(body)):
++                with self.assertRaises(ValueError):
++                    selic.selic_today()
++
++
++if __name__ == "__main__":
++    unittest.main()

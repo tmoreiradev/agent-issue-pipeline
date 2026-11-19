@@ -34,6 +34,25 @@ from pathlib import Path
 from tracker import Tracker
 
 QUEUE_LABEL = "ready-for-agent"
+def find_bash() -> str:
+    """POSIX bash for the checks and git steps. On Windows that must be Git Bash: the `bash` launchers in
+    System32 and WindowsApps start WSL, a different machine with different files."""
+    if os.environ.get("PIPELINE_BASH"):
+        return os.environ["PIPELINE_BASH"]
+    if os.name != "nt":
+        return shutil.which("bash") or "bash"
+    git = shutil.which("git")
+    if git:
+        for up in (Path(git).parent.parent, Path(git).parent.parent.parent):  # <Git>/cmd or <Git>/mingw64/bin
+            if (up / "bin" / "bash.exe").is_file():
+                return str(up / "bin" / "bash.exe")
+    found = shutil.which("bash")
+    if found and not re.search(r"(?i)\\(system32|windowsapps)\\", found):
+        return found
+    raise SystemExit("Git Bash not found: install Git for Windows or set PIPELINE_BASH")
+
+
+BASH = find_bash()
 
 
 class QuotaHit(Exception):
@@ -49,7 +68,7 @@ def log(msg: str) -> None:
 
 
 def sh(cmd: str, cwd: Path | None = None, timeout: int = 1800, check: bool = False) -> subprocess.CompletedProcess:
-    r = subprocess.run(["bash", "-c", cmd], cwd=cwd, capture_output=True, text=True, encoding="utf-8",
+    r = subprocess.run([BASH, "-c", cmd], cwd=cwd, capture_output=True, text=True, encoding="utf-8",
                        errors="replace", timeout=timeout)
     if check and r.returncode:
         raise RuntimeError(f"{cmd!r} exited {r.returncode}: {(r.stderr or r.stdout)[-800:]}")
@@ -115,16 +134,43 @@ def pick(issues: list[dict]) -> dict | None:
 # --------------------------------------------------------------------------- agents
 
 
-def run_agent(command: list[str], cwd: Path, logfile: Path, timeout: int) -> str:
-    r = subprocess.run(command, cwd=cwd, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                       timeout=timeout)
+METER = {"cost_usd": 0.0, "tokens": 0, "agent_calls": 0}  # per issue; reset in process()
+
+
+def meter(stdout: str, stderr: str) -> str:
+    """Account cost/tokens and return the agent's answer text.
+
+    Claude Code with `--output-format json` prints one JSON object with `result`, `total_cost_usd` and `usage`;
+    Codex prints `tokens used` followed by the count. Anything else is taken as plain text."""
+    METER["agent_calls"] += 1
+    m = re.search(r"tokens used\s*\n?\s*(\d[\d.,]*)", stderr + stdout)
+    if m:  # Codex prints the count with the locale's thousands separator (`2,827` or `2.827`)
+        METER["tokens"] += int(re.sub(r"\D", "", m.group(1)))
+    try:
+        data = json.loads(stdout)
+    except ValueError:
+        return stdout
+    if not isinstance(data, dict) or "result" not in data:
+        return stdout
+    METER["cost_usd"] += float(data.get("total_cost_usd") or 0)
+    u = data.get("usage") or {}
+    METER["tokens"] += sum(int(u.get(k) or 0) for k in (
+        "input_tokens", "output_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"))
+    return str(data.get("result") or "")
+
+
+def run_agent(command: list[str], cwd: Path, logfile: Path, timeout: float) -> str:
+    exe = shutil.which(command[0]) or command[0]  # finds npm `.cmd` shims on Windows too
+    r = subprocess.run([exe, *command[1:]], cwd=cwd, capture_output=True, text=True, encoding="utf-8",
+                       errors="replace", timeout=timeout)
     out = (r.stdout or "") + (r.stderr or "")
     logfile.write_text(out, encoding="utf-8")
-    if r.returncode and re.search(r"(?i)failed to authenticate|session expired|not logged in|please run /login", out):
+    if re.search(r"(?i)failed to authenticate|session expired|not logged in|please run /login", out) and (
+            r.returncode or '"is_error":true' in out.replace(" ", "")):
         raise AgentAuth(out.strip()[-200:])
     if r.returncode and re.search(r"(?i)usage limit|rate limit|limit reached|resets at", out[-2000:]):
         raise QuotaHit(out[-300:])
-    return r.stdout or ""
+    return meter(r.stdout or "", r.stderr or "")
 
 
 def verdict(text: str) -> str | None:
@@ -156,10 +202,13 @@ return), do not fake it: implement the rest and end your answer with one line `B
 REVIEW_PROMPT = """You are a senior reviewer. Review the change for the issue below.
 
 Files in this folder: `diff.patch` (diff against the main branch), `checks.txt` (real output of tests and
-build, which you cannot run yourself) and this issue. Round {round} of at most {max_rounds}.{previous}
+build, which you cannot run yourself), `PROJECT_RULES.md` (the repository's rules for agents, when it has
+any) and this issue. Round {round} of at most {max_rounds}.{previous}
 
-Check: every acceptance criterion and eval is really met; correctness, concurrency and data-loss bugs;
-security proportional to the project; tests that would fail without the change. Ignore style.
+Check: every acceptance criterion and eval is really met; the change follows the project rules;
+correctness, concurrency and data-loss bugs; security proportional to the project; tests that would fail
+without the change. Ignore style. `checks.txt` is ground truth: do not claim a test fails when it shows the
+suite passing, and do not reject on arithmetic you cannot verify; when unsure, say so and keep it MEDIUM.
 
 Format: findings with severity (CRITICAL/HIGH/MEDIUM/LOW), file:line, a concrete scenario and the fix.
 The last line must be exactly `VERDICT: APPROVED` or `VERDICT: REJECTED`.
@@ -219,6 +268,10 @@ def review(issue: dict, wt: Path, checks: str, rnd: int, previous: str, logdir: 
     shutil.rmtree(rdir, ignore_errors=True)
     rdir.mkdir(parents=True)
     files = {"REVIEW.md": prompt, "diff.patch": diff, "checks.txt": checks}
+    rules = [(wt / n).read_text(encoding="utf-8", errors="replace") for n in ("CLAUDE.md", "AGENTS.md")
+             if (wt / n).is_file()]
+    if rules:  # without them the reviewer approved code that broke a rule it never saw (see the benchmark)
+        files["PROJECT_RULES.md"] = "\n\n".join(rules)
     if previous:
         files["previous.md"] = previous
     for name, content in files.items():
@@ -272,8 +325,8 @@ def deploy(cfg: dict) -> tuple[bool, str]:
 
 
 def integrate(wt: Path, cfg: dict) -> str:
-    """Rebase on the remote branch and fast-forward push; refresh the main clone if it is clean on that branch."""
-    rb, repo = cfg["repo"]["branch"], cfg["repo"]["path"]
+    """Rebase on the remote branch and fast-forward push. Returns the pushed commit."""
+    rb = cfg["repo"]["branch"]
     before = sh("git rev-parse HEAD", cwd=wt).stdout.strip()
     sh(f"git fetch -q origin && git rebase -q origin/{rb}", cwd=wt, check=True)
     if sh("git rev-parse HEAD", cwd=wt).stdout.strip() != before:
@@ -282,13 +335,17 @@ def integrate(wt: Path, cfg: dict) -> str:
         if not ok:
             raise RuntimeError(f"checks fail after rebasing on {rb}; nothing pushed.\n{checks[-800:]}")
     sh(f"git push -q origin HEAD:{rb}", cwd=wt, check=True)
-    head = sh("git rev-parse --short HEAD", cwd=wt).stdout.strip()
+    return sh("git rev-parse --short HEAD", cwd=wt).stdout.strip()
+
+
+def refresh_main_clone(head: str, cfg: dict) -> None:
+    """Fast-forward the clone the deploy runs from; refuse (after the push) if someone left it dirty."""
+    rb, repo = cfg["repo"]["branch"], cfg["repo"]["path"]
     clean = not sh("git status --porcelain --untracked-files=no", cwd=repo).stdout.strip()
     on_branch = sh("git branch --show-current", cwd=repo).stdout.strip() == rb
     if not (clean and on_branch):
         raise RuntimeError(f"pushed {head}, but {repo} is not clean on {rb}: deploy left to a human")
     sh(f"git pull -q --ff-only origin {rb}", cwd=repo, check=True)
-    return head
 
 
 def cleanup_worktree(iid: str, cfg: dict) -> None:
@@ -323,6 +380,8 @@ def process(issue: dict, tr: Tracker, cfg: dict, dry: bool = False) -> str:
         log(f"{iid} would pass the gate (dry run)")
         return "dry"
     tr.set_state(iid, "In Progress")
+    METER.update(cost_usd=0.0, tokens=0, agent_calls=0)
+    started = time.monotonic()
     wc = cfg["worker"]
     model = next((lb.split(":", 1)[1] for lb in issue["labels"] if lb.startswith("model:")), wc.get("model", ""))
     logdir = cfg["work"] / "logs" / iid / dt.datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -335,8 +394,19 @@ def process(issue: dict, tr: Tracker, cfg: dict, dry: bool = False) -> str:
     for rnd in range(1, cfg["max_rounds"] + 1):
         prompt = WORKER_PROMPT.format(iid=iid, branch=branch, title=issue.get("title", ""), body=issue["body"],
                                       feedback=feedback)
-        out = run_agent(fill(wc["command"], prompt=prompt, model=model, python=sys.executable, base=str(cfg["base"])),
-                        wt, logdir / f"worker-{rnd}.log", int(wc.get("timeout_minutes", 90)) * 60)
+        try:
+            out = run_agent(fill(wc["command"], prompt=prompt, model=model, python=sys.executable,
+                                 base=str(cfg["base"])),
+                            wt, logdir / f"worker-{rnd}.log", float(wc.get("timeout_minutes", 90)) * 60)
+        except subprocess.TimeoutExpired as e:
+            # Partial work from a worker that ran out of time is never integrated automatically.
+            partial = e.stdout.decode(errors="replace") if isinstance(e.stdout, bytes) else (e.stdout or "")
+            (logdir / f"worker-{rnd}.log").write_text(partial, encoding="utf-8")
+            stuck = [f"worker: {m}" for m in marks("BLOCKED", partial)] + [
+                f"worker: timed out after {wc.get('timeout_minutes', 90)} min"]
+            rounds.append(f"| {rnd} | - | - | worker timed out |")
+            log(f"{iid} round {rnd}: worker timed out; escalating")
+            break
         sh("git add -A && git diff --cached --quiet || git commit -q -m 'chore: worker leftovers'", cwd=wt)
         if not sh(f"git diff --stat origin/{cfg['repo']['branch']}...HEAD", cwd=wt).stdout.strip():
             # Nothing changed: skip the checks and the reviewer's quota.
@@ -368,6 +438,7 @@ def process(issue: dict, tr: Tracker, cfg: dict, dry: bool = False) -> str:
 
     date = dt.date.today().isoformat()
     tr.label(iid, remove=QUEUE_LABEL)  # never re-enters the queue on its own
+    head = ""  # set once the change is on the remote branch, whatever happens afterwards
     if not approved:
         tr.label(iid, add="ready-for-human")
         why = ("; needs a decision: " + " | ".join(stuck)) if stuck else ""
@@ -376,6 +447,7 @@ def process(issue: dict, tr: Tracker, cfg: dict, dry: bool = False) -> str:
     else:
         try:
             head = integrate(wt, cfg)
+            refresh_main_clone(head, cfg)
             deployed, msg = deploy(cfg)
             result = f"approved and merged (`{head}`); {msg}"
         except RuntimeError as e:
@@ -386,12 +458,20 @@ def process(issue: dict, tr: Tracker, cfg: dict, dry: bool = False) -> str:
             cleanup_worktree(iid, cfg)
         else:
             tr.label(iid, add="ready-for-human")
+    minutes = (time.monotonic() - started) / 60
+    usage = (f"{minutes:.1f} min, {METER['agent_calls']} agent calls, {METER['tokens']:,} tokens, "
+             f"US$ {METER['cost_usd']:.2f} reported by the agent CLIs")
     cfg["reports"].mkdir(parents=True, exist_ok=True)
     (cfg["reports"] / f"{iid}-{date}.md").write_text(
-        f"# {iid}: {issue.get('title', '')}\n\n**Result:** {result}\n\n| Round | Checks | Reviewer | Verdict |\n"
-        f"|---|---|---|---|\n" + "\n".join(rounds) + f"\n\n## Last review\n\n{text}\n", encoding="utf-8")
+        f"# {iid}: {issue.get('title', '')}\n\n**Result:** {result}\n\n**Usage:** {usage}\n\n"
+        f"| Round | Checks | Reviewer | Verdict |\n|---|---|---|---|\n" + "\n".join(rounds)
+        + f"\n\n## Last review\n\n{text}\n", encoding="utf-8")
+    (cfg["reports"] / f"{iid}.json").write_text(json.dumps({
+        "id": iid, "outcome": "approved" if approved else ("escalated" if stuck else "rejected"),
+        "merged": bool(head), "head": head or None, "rounds": len(rounds), "stuck": stuck,
+        "minutes": round(minutes, 2), **METER}, indent=2), encoding="utf-8")
     with open(cfg["reports"] / "pipeline-log.md", "a", encoding="utf-8") as f:
-        f.write(f"- {date} {iid} {issue.get('title', '')}: {result}\n")
+        f.write(f"- {date} {iid} {issue.get('title', '')}: {result} ({usage})\n")
     notify(cfg, f"{'✅' if approved else '⚠️'} **{iid}** {issue.get('title', '')}\n{result}")
     log(f"{iid} finished: {result}")
     return "approved" if approved else "rejected"

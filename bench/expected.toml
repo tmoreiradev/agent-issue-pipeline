@@ -1,0 +1,22 @@
+# Expected outcome per issue: approve (merged and hidden test passes), escalate, gate.
+
+BENCH_01 = { category = "feasible", expect = "approve" }
+BENCH_02 = { category = "feasible", expect = "approve" }
+BENCH_03 = { category = "feasible", expect = "approve" }
+BENCH_04 = { category = "feasible", expect = "approve" }
+BENCH_05 = { category = "feasible", expect = "approve" }
+BENCH_06 = { category = "feasible", expect = "approve" }
+BENCH_07 = { category = "feasible", expect = "approve" }
+BENCH_08 = { category = "feasible", expect = "approve" }
+BENCH_09 = { category = "hard", expect = "approve" }
+BENCH_10 = { category = "hard", expect = "approve" }
+BENCH_11 = { category = "hard", expect = "approve" }
+BENCH_12 = { category = "impossible", expect = "escalate" }
+BENCH_13 = { category = "impossible", expect = "escalate" }
+BENCH_14 = { category = "impossible", expect = "escalate" }
+BENCH_15 = { category = "gate", expect = "gate" }
+BENCH_16 = { category = "gate", expect = "gate" }
+BENCH_17 = { category = "gate", expect = "gate" }
+BENCH_18 = { category = "gate", expect = "gate" }
+BENCH_19 = { category = "gate", expect = "gate" }
+BENCH_20 = { category = "gate", expect = "gate" }

@@ -1,0 +1,61 @@
+diff --git a/brdocs/nfe.py b/brdocs/nfe.py
+new file mode 100644
+index 0000000..4c5b800
+--- /dev/null
++++ b/brdocs/nfe.py
+@@ -0,0 +1,19 @@
++"""NF-e access key (44 digits) check digit."""
++
++import re
++
++
++def nfe_key_check_digit(key43: str) -> int:
++    """Mod-11 check digit (weights 2-9 right to left) of the first 43 digits of an NF-e key."""
++    if not isinstance(key43, str) or not re.fullmatch(r"[0-9]{43}", key43):
++        raise ValueError("expected exactly 43 digits")
++    rest = sum(int(n) * (i % 8 + 2) for i, n in enumerate(reversed(key43))) % 11
++    return 0 if rest < 2 else 11 - rest
++
++
++def is_valid_nfe_key(key: str) -> bool:
++    """True for a 44-digit NF-e key (spaces allowed) whose last digit is correct."""
++    if not isinstance(key, str):
++        return False
++    d = key.replace(" ", "")
++    return bool(re.fullmatch(r"[0-9]{44}", d)) and int(d[43]) == nfe_key_check_digit(d[:43])
+diff --git a/tests/test_nfe.py b/tests/test_nfe.py
+new file mode 100644
+index 0000000..41039bb
+--- /dev/null
++++ b/tests/test_nfe.py
+@@ -0,0 +1,30 @@
++import unittest
++
++from brdocs.nfe import is_valid_nfe_key, nfe_key_check_digit
++
++K43 = "3525110123456700018955001000000123100000123"
++
++
++class TestNfe(unittest.TestCase):
++    def test_check_digit(self):
++        self.assertEqual(nfe_key_check_digit(K43), 2)
++
++    def test_check_digit_all_ones(self):
++        self.assertEqual(nfe_key_check_digit("1" * 43), 2)
++
++    def test_check_digit_invalid_input(self):
++        for v in ("", K43[:-1], K43 + "1", "a" * 43, K43[:-1] + "x", "１" * 43, None):
++            with self.assertRaises(ValueError):
++                nfe_key_check_digit(v)
++
++    def test_valid_key(self):
++        self.assertTrue(is_valid_nfe_key(K43 + "2"))
++        spaced = " ".join((K43 + "2")[i:i + 4] for i in range(0, 44, 4))
++        self.assertTrue(is_valid_nfe_key(spaced))
++
++    def test_wrong_check_digit(self):
++        self.assertFalse(is_valid_nfe_key(K43 + "3"))
++
++    def test_wrong_length_and_non_digits(self):
++        for v in ("", K43, K43 + "21", K43 + "x", "１" * 44, None, 5):
++            self.assertFalse(is_valid_nfe_key(v))

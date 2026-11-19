@@ -1,0 +1,4 @@
+- HIGH — `brdocs/pis.py:14`, `tests/test_pis.py:16-17`: The previous finding remains unresolved. `"12012345672"` and `"120.12345.67-2"` return `False`: the weighted sum is 139, producing check digit 4, while the issue requires 2. Both digit-0 fixtures are also invalid—their calculated check digits are 1 and 2. Consequently, the reported passing checks do not match the supplied diff. Resolve the formula/example conflict, correct the fixtures to cover both digit-0 branches, and regenerate checks against the reviewed change.
+
+REPEATED: Required valid examples still fail, and digit-0 fixtures remain incorrect.
+VERDICT: REJECTED

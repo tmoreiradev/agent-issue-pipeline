@@ -58,6 +58,16 @@ def test_fill_keeps_braces_in_prompts():
         "x", "use {json} and {model}", "--model", "m"]  # inserted text is never substituted again
 
 
+def test_meter_reads_claude_json_and_codex_tokens():
+    p.METER.update(cost_usd=0.0, tokens=0, agent_calls=0)
+    claude = '{"result": "Done.\\nBLOCKED: no API", "total_cost_usd": 0.25, "usage": {"input_tokens": 10, ' \
+             '"output_tokens": 5, "cache_creation_input_tokens": 100, "cache_read_input_tokens": 1000}}'
+    assert p.meter(claude, "") == "Done.\nBLOCKED: no API"
+    assert p.meter("VERDICT: APPROVED", "codex\ntokens used\n2.827\n") == "VERDICT: APPROVED"
+    assert p.meter("plain text", "tokens used 1,500") == "plain text"
+    assert p.METER == {"cost_usd": 0.25, "tokens": 1115 + 2827 + 1500, "agent_calls": 3}
+
+
 def test_tracker_roundtrip():
     with tempfile.TemporaryDirectory() as d:
         (Path(d) / "A-1.md").write_text(
@@ -112,6 +122,18 @@ def test_deploy_build_failure_keeps_old_version():
         assert not ok and "build failed" in msg and (d / "live").read_text() == "v1\n"
 
 
+def test_reviewer_gets_project_rules():
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        (d / "logs").mkdir()
+        (d / "CLAUDE.md").write_text("No network access in tests.\n")
+        show = "print(open('PROJECT_RULES.md').read()); print('VERDICT: APPROVED')"
+        cfg = {"work": d, "base": d, "max_rounds": 1, "repo": {"branch": "main"},
+               "reviewer": {"command": [sys.executable, "-c", show]}}
+        text, _ = p.review({"id": "X-2", "title": "t", "body": "b"}, d, "", 1, "", d / "logs", cfg)
+        assert "No network access in tests." in text and p.verdict(text) == "APPROVED"
+
+
 def test_deploy_failed_up_rolls_back_and_failed_rollback_is_reported():
     with tempfile.TemporaryDirectory() as d:
         d = Path(d)
@@ -145,6 +167,19 @@ def test_end_to_end_demo():
                              capture_output=True, text=True, check=True).stdout
         assert "(DEMO-1)" in log and "(DEMO-4)" in log and "DEMO-3" not in log
         assert "multiply" in (ws / "service/calc.py").read_text()        # deployed after health check
+
+
+def test_benchmark_harness_with_mock_agents():
+    """Mock agents commit the reference solutions: every expected outcome and every hidden test must hold.
+    This checks the harness and the hidden tests themselves, not any model."""
+    import json
+    with tempfile.TemporaryDirectory() as d:
+        r = subprocess.run([sys.executable, str(ROOT / "bench/run_bench.py"), "--mode", "mock", "--no-save",
+                            "--workspace", str(Path(d) / "ws")], capture_output=True, text=True)
+        assert r.returncode == 0, r.stdout + r.stderr
+        summary = json.loads(r.stdout)
+        assert summary["correct"] == summary["total"] == 20, summary
+        assert summary["false_approvals"] == 0 and summary["merged"] == 11
 
 
 if __name__ == "__main__":

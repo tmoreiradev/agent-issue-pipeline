@@ -1,0 +1,3 @@
+- HIGH — `brdocs/pis.py:14`: The required eval is unmet: `"12012345672"` returns `False`. The weighted sum is 139, yielding check digit 4, whereas the issue requires 2. The digit-0 test fixtures are also incorrect: their sums yield check digits 1 and 2, so the added tests cannot pass as shown in `checks.txt`. Resolve the conflict between the specified formula and required examples, correct the fixtures accordingly, and regenerate the check output.
+
+VERDICT: REJECTED

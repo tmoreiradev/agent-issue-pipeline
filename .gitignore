@@ -1,8 +1,9 @@
 __pycache__/
 .pytest_cache/
 .ruff_cache/
-.pipeline/
-reports/
-issues/
-pipeline.toml
-demo/
+/.pipeline/
+/reports/
+/issues/
+/pipeline.toml
+/demo/
+bench/.work/
