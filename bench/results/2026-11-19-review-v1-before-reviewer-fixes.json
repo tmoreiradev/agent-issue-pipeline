@@ -361,5 +361,8 @@
     "agent_minutes": 10.5,
     "cost_usd": 2.61,
     "tokens": 4296319
-  }
+  },
+  "tag": "v1-before-reviewer-fixes",
+  "finished_at": "2026-11-19T02:00:00",
+  "finished_at_note": "approximate: recorded before the field existed"
 }

@@ -39,7 +39,7 @@ flowchart LR
     D -- healthy --> DONE[Done<br/>report + webhook]
 ```
 
-**Benchmark, 20 issues with hidden acceptance tests:** every underspecified or impossible issue was stopped or sent to a human. With cross-vendor review: 0 bad merges, but 3 correct changes blocked. Checks only: 1 bad merge, nothing blocked. Details in [Benchmark](#benchmark).
+**Benchmark, 20 issues with hidden acceptance tests:** in every run, all underspecified and impossible issues were stopped or sent to a human. With the current reviewer: 19/20, 1 false approval, 0 false rejections. The first reviewer prompt had 0 false approvals but 3 false rejections. Details in [Benchmark](#benchmark).
 
 | Step | What the agent does | Who decides |
 |---|---|---|
@@ -121,55 +121,54 @@ Most rows come from incidents in real use. The rest are guards the design needed
   - 3 impossible or contradictory (live government data in a project that forbids network access, two acceptance criteria that cannot both hold);
   - 6 underspecified, which should never reach an agent.
 - **Hidden tests:** for every solvable issue, a hidden acceptance test that the agents never see runs against what was actually merged. The same hidden tests run against the worker's branch when nothing was merged, which separates a correct rejection from a false one.
-- **Two modes, one run each, same worker (Claude Code, Sonnet):**
+- **Two modes, same worker (Claude Code, Sonnet):**
   - `review`: Codex reviews every diff;
   - `no-review`: the reviewer is replaced by "approve when the pipeline's own checks pass".
+- **Two versions, one run of each mode per version:**
+  - **v1** is the first review prompt;
+  - **v2** adds the two reviewer fixes that v1 motivated (below).
 
-| | with Codex review | checks only |
-|---|---|---|
-| Correct outcomes | **17/20** | **19/20** |
-| Feasible: merged, hidden tests pass | 6/8 | 8/8 |
-| Hard: merged, hidden tests pass | 2/3 | 2/3 |
-| Impossible: handed to a human, nothing merged | 3/3 | 3/3 |
-| Underspecified: stopped at the gate | 6/6 | 6/6 |
-| False approvals (merged, hidden test fails) | **0** | **1** |
-| False rejections (not merged, branch passes hidden test) | **3** | **0** |
-| Agent time | 10.5 min | 4.7 min |
-| Tokens | 4.3 M | 2.7 M |
-| Cost reported by the Claude CLI (Codex not included) | US$ 2.61 | US$ 1.89 |
+| | Codex review, v1 | Codex review, v2 | Checks only, v2 |
+|---|---|---|---|
+| Correct outcomes | 17/20 | **19/20** | **19/20** |
+| Feasible: merged, hidden tests pass | 6/8 | 8/8 | 8/8 |
+| Hard: merged, hidden tests pass | 2/3 | 2/3 | 2/3 |
+| Impossible: handed to a human, nothing merged | 3/3 | 3/3 | 3/3 |
+| Underspecified: stopped at the gate | 6/6 | 6/6 | 6/6 |
+| False approvals (merged, hidden test fails) | **0** | **1** | **1** |
+| False rejections (not merged, branch passes hidden test) | **3** | **0** | **0** |
+| Agent time | 10.5 min | 8.8 min | 5.0 min |
+| Tokens | 4.3 M | 3.2 M | 3.0 M |
+| Cost reported by the Claude CLI (Codex not included) | US$ 2.61 | US$ 2.09 | US$ 1.94 |
 
-Per-issue results are in [`bench/RESULTS.md`](bench/RESULTS.md) and the raw data in `bench/results/`. The reviews, check outputs, worker answers and diffs behind the cases below are in [`bench/evidence/`](bench/evidence/). Hidden tests run on the exact commit each issue pushed (or on the worker's branch when nothing was merged), so one issue's result never depends on another's.
+The checks-only mode scored the same in v1: 19/20, the same single false approval, US$ 1.89. Per-issue results and every run are in [`bench/RESULTS.md`](bench/RESULTS.md), with the raw data in `bench/results/`. The reviews, check outputs, worker answers and diffs behind the cases below are in [`bench/evidence/`](bench/evidence/). Hidden tests run on the exact commit each issue pushed, or on the worker's branch when nothing was merged, so one issue's result never depends on another's.
 
 **What it says:**
 
-1. **The gate and the `BLOCKED:` contract did the safety work.** All 6 underspecified issues stopped before any agent ran. All 3 impossible ones went to a human, with the worker saying why (for example, that two acceptance criteria contradict each other for the same function and input).
-2. **The reviewer prevented the only bad merge.** On the installment splitter, both modes produced code that accepted `Decimal("1.500")`, which the issue says must be rejected for having more than 2 decimal places. Without review it was merged, and the hidden test fails. With review, Codex flagged it in round 1, and the worker fixed it.
-3. **The same reviewer also blocked three changes whose final branch passes the hidden tests.** It cannot run code, and:
+1. **The gate and the `BLOCKED:` contract did the safety work.** In all four runs, all 6 underspecified issues stopped before any agent ran. All 3 impossible ones went to a human, with the worker saying why (for example, that two acceptance criteria contradict each other for the same function and input).
+2. **v1: the reviewer prevented the only bad merge, at the price of three false blocks.** On the installment splitter, the worker produced code that accepted `Decimal("1.500")`, which the issue says must be rejected for having more than 2 decimal places. Without review it was merged. With review, Codex flagged it in round 1 and the worker fixed it. The same reviewer also blocked three changes whose final branch passes the hidden tests. It cannot run code, and:
    - it miscomputed a check digit (a weighted sum of 139 instead of 119);
    - it claimed that a test failed while `checks.txt` showed the suite passing;
    - after the real fix, it kept escalating the splitter into edge cases such as `Decimal("1E+1000000")`.
 
-   Twice it rejected with only MEDIUM findings, against the prompt's own verdict rule, and that is how it caught the real bug. In the PIS case the worker answered "the reviewer should recompute it". The `REPEATED:` rule then sent the issue to a human instead of looping.
-4. **The reviewer approved a rule violation it could not see.** On the impossible SELIC issue it approved code that calls the central bank API, which the project's rules forbid. It never received those rules. The worker's `BLOCKED:` line is what stopped the merge.
-
-**Changes made because of it, not yet re-measured:**
-
-- the reviewer now receives the repository's `CLAUDE.md`/`AGENTS.md` as `PROJECT_RULES.md`;
-- the review prompt now treats `checks.txt` as ground truth and keeps findings it cannot verify at MEDIUM, which does not reject. This trades some recall for fewer false blocks, since a MEDIUM-only rejection is what caught the real bug.
-
-The numbers above were measured before these two changes.
+   It also approved code that called the central bank API on the impossible SELIC issue, because it never saw the project rule against network access. The worker's `BLOCKED:` line is what stopped that merge.
+3. **v2: the fixes removed every false block, and the catch went with them.**
+   - **The fixes:** the reviewer now receives the repository's `CLAUDE.md`/`AGENTS.md` as `PROJECT_RULES.md`. The review prompt now treats `checks.txt` as ground truth, and findings it cannot verify stay MEDIUM, which does not reject.
+   - **The result:** false rejections went from 3 to 0, and agent time fell 16%. But on the splitter Codex raised a different HIGH finding (results depending on the active `Decimal` context), the worker fixed it, and the `1.500` gap was merged, exactly as without review.
+   - **Why the catch did not repeat is not something one run can show.** In v1 the gap was caught by a rejection with MEDIUM findings only, justified as an unmet acceptance criterion, which the verdict rule allows. In v2 the reviewer spent its rejection on another problem and approved the fix.
+4. **So, on this set, the two prompts traded errors rather than removing them.** v1 blocked 3 correct changes and let no bad change through. v2 blocked none and let 1 through, the same one the checks-only mode let through. With one run per configuration this cannot be attributed to the prompt alone. Run-to-run variation is just as plausible, and separating the two needs repeated runs and a set where review has more to find (large diffs, missing tests, security-sensitive code).
 
 **Limits:**
 
-- **Small and narrow.** n = 20 small, well-specified Python tasks, one worker model and a single run per mode, so there are no error bars.
-- **Near the ceiling.** A strong worker with real tests got 10 of 11 solvable issues right on its own, so the set has little room to show where review pays off: large diffs, missing tests, security-sensitive code. The trade-off above (one bug caught against three correct changes blocked) rests on very few cases.
-- **One hidden test was tightened after the runs.** The `1.500` case was added to BENCH-10's hidden test after a review pointed out the gap. Both runs were re-scored with `--score-only`, without re-running the agents.
+- **Small and narrow.** n = 20 small, well-specified Python tasks, one worker model and a single run per mode and version, so there are no error bars.
+- **Near the ceiling.** A strong worker with real tests got 10 of 11 solvable issues right on its own, so the set has little room to show where review pays off. Every review effect above rests on one or a few issues.
+- **One judgement call in the gold set.** BENCH-10's "more than 2 decimal places" is read by exponent, so `Decimal("1.500")` must be rejected. The v1 reviewer read it the same way. The `1.500` case was added to the hidden test after a review pointed out the gap, and v1 was re-scored with `--score-only`, without re-running the agents. v2 ran with the final hidden tests.
 - **Reviewer configuration.** Codex ran with its default settings through `codex exec`.
 
 To reproduce:
 
 ```bash
-python bench/run_bench.py --mode review       # or --mode no-review
+python bench/run_bench.py --mode review --tag my-run   # or --mode no-review
 python bench/run_bench.py --mode mock         # the harness and the hidden tests, with no agents (CI runs this)
 ```
 
@@ -189,7 +188,7 @@ python bench/run_bench.py --mode mock         # the harness and the hidden tests
 
 ## What I would change next
 
-- Re-run the benchmark with the reviewer fixes, and add harder issues (larger diffs, missing tests, security-sensitive code) where review should earn its cost.
+- Repeat each configuration several times to separate prompt effects from run-to-run variation, and add harder issues (larger diffs, missing tests, security-sensitive code) where review should earn its cost.
 - Let the reviewer execute code in a sandbox, so it can check its claims instead of guessing.
 - Run the worker in a throwaway container instead of a worktree on the host.
 - A GitHub Issues tracker adapter.
